@@ -11,14 +11,12 @@
     <!-- Map container -->
     <div id="map"></div>
 
-    <!-- Tombol toggle -->
-    <button id="toggleSidebarBtn" class="toggle-btn">☰</button>
+    <!-- Toggle Button -->
+    <button id="toggleSidebarBtn" class="toggle-btn">AI Insights ✨</button>
 
     <!-- Sidebar -->
     <div id="sidebar" class="sidebar">
         <div id="tabs" class="tabs"></div>
-        <div id="tabContents"></div>
+        <div id="tabContents">Cari lokasi dulu!</div>
     </div>
-</div>
-
 </div>
