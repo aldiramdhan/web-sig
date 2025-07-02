@@ -6,7 +6,7 @@ document.addEventListener("livewire:init", function () {
             '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map);
 });
-const API_KEY = "AIzaSyD8fCpp71BUUXSm3H4KUqJp1vnUnOHa_U0";
+const API_KEY = "0";
 const map = L.map("map").setView([-2.5489, 118.0149], 5);
 
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -16,10 +16,17 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 let marker;
 let polygonLayer;
+let childPolygonsLayer;
+let currentAdminLevel = null;
+let currentLocation = null;
 
-async function searchLocation() {
-    const location = document.getElementById("locationInput").value;
+async function searchLocation(clickedLocation) {
+    // Use either the clicked location name or the input value
+    const location = clickedLocation || document.getElementById("locationInput").value;
     if (!location) return alert("Masukkan lokasi!");
+    
+    // Store current location for reference
+    currentLocation = location;
 
     const geoRes = await fetch(
         `https://nominatim.openstreetmap.org/search?q=${location}&format=json&polygon_geojson=1`
@@ -27,27 +34,28 @@ async function searchLocation() {
     const geoData = await geoRes.json();
     if (!geoData.length) return alert("Lokasi tidak ditemukan!");
 
-    const { lat, lon, display_name, geojson } = geoData[0];
+    const { lat, lon, display_name, geojson, osm_type, osm_id } = geoData[0];
     map.setView([lat, lon], 10);
 
+    // Clear previous layers
     if (marker) map.removeLayer(marker);
-    marker = L.marker([lat, lon])
-        .addTo(map)
-        .bindPopup(display_name || location)
-        .openPopup();
-
-    // Remove previous polygon
     if (polygonLayer) {
         map.removeLayer(polygonLayer);
         polygonLayer = null;
     }
+    if (childPolygonsLayer) {
+        map.removeLayer(childPolygonsLayer);
+        childPolygonsLayer = null;
+    }
 
-    // Add polygon if available
+    // Removed marker creation as per request
+
+    // Add parent polygon if available
     if (geojson) {
         polygonLayer = L.geoJSON(geojson, {
             style: {
                 color: "#1d4ed8",
-                weight: 2,
+                weight: 3,
                 fillOpacity: 0.1,
             },
         }).addTo(map);
@@ -56,35 +64,144 @@ async function searchLocation() {
 
     fetchTopicData(location);
 
-    // Apply blur effect to the map tiles
+    // Automatically show the sidebar and adjust map
+    const sidebar = document.getElementById('sidebar');
+    sidebar.classList.add("show");
+    document.getElementById('main-container').style.gridTemplateColumns = '400px 1fr';
     setTimeout(() => {
-        document.querySelectorAll("img.leaflet-tile").forEach((tile) => {
-            tile.style.filter = "blur(10px)";
-            tile.style.transition = "filter 0.3s ease";
-        });
+        map.invalidateSize();
+        if (polygonLayer) {
+            map.fitBounds(polygonLayer.getBounds());
+        }
     }, 300);
 
-    // Disable map interactions
-    map.dragging.disable();
-    map.touchZoom.disable();
-    map.scrollWheelZoom.disable();
-    map.doubleClickZoom.disable();
-    map.boxZoom.disable();
+    // Determine admin level based on OSM data
+    // This is a simplistic approach - in a real app, you might want to use the actual admin_level from OSM
+    let adminLevel;
+    if (osm_type === 'relation' && display_name.includes('country')) {
+        adminLevel = 2; // Country level
+    } else if (display_name.includes('province') || display_name.includes('prefecture') || display_name.includes('state')) {
+        adminLevel = 4; // Province/state level
+    } else if (display_name.includes('regency') || display_name.includes('district') || display_name.includes('county')) {
+        adminLevel = 6; // Regency/district level
+    } else if (display_name.includes('subdistrict') || display_name.includes('kecamatan')) {
+        adminLevel = 8; // Subdistrict/kecamatan level
+    } else {
+        // Default to country level if we can't determine
+        adminLevel = 2;
+    }
+    
+    currentAdminLevel = adminLevel;
+    
+    // Fetch child administrative boundaries
+    if (geojson && adminLevel < 8) { // Don't fetch children for subdistricts (kecamatan)
+        fetchAdminBoundaries(geojson, adminLevel);
+    }
+}
 
-    // Re-enable map interactions when clicking anywhere on the map
-    map.on("click", () => {
-        document.querySelectorAll("img.leaflet-tile").forEach((tile) => {
-            tile.style.filter = "blur(0)";
+async function fetchAdminBoundaries(parentGeojson, parentAdminLevel) {
+    try {
+        // Calculate bounding box from parent geojson
+        let bounds = L.geoJSON(parentGeojson).getBounds();
+        let south = bounds.getSouth();
+        let west = bounds.getWest();
+        let north = bounds.getNorth();
+        let east = bounds.getEast();
+
+        // Determine child admin level based on parent admin level
+        let childAdminLevel;
+        if (parentAdminLevel === 2) { // Country
+            childAdminLevel = 4; // States/Provinces
+        } else if (parentAdminLevel === 4) { // State/Province
+            childAdminLevel = 6; // Districts/Regencies
+        } else if (parentAdminLevel === 6) { // District/Regency
+            childAdminLevel = 8; // Subdistricts/Kecamatan
+        } else {
+            console.log('No child admin levels to fetch for this level');
+            return;
+        }
+
+        // Query for administrative boundaries within the bounding box
+        let query = `[out:json];
+        (relation["boundary"="administrative"]["admin_level"="${childAdminLevel}"](${south},${west},${north},${east});
+         node["place"~"city|town|village"](${south},${west},${north},${east});
+        );
+        out geom;`;
+
+        const overpassUrl = 'https://overpass-api.de/api/interpreter';
+        const response = await fetch(overpassUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'data=' + encodeURIComponent(query)
         });
-        map.dragging.enable();
-        map.touchZoom.enable();
-        map.scrollWheelZoom.enable();
-        map.doubleClickZoom.enable();
-        map.boxZoom.enable();
-    });
 
-    // Automatically show the sidebar
-    sidebar.classList.add("show");
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Overpass API error: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const errorText = await response.text();
+            throw new Error(`Expected JSON but received ${contentType}: ${errorText}`);
+        }
+
+        const data = await response.json();
+        console.log('Child admin boundaries:', data);
+
+        // Convert Overpass data to GeoJSON using osmtogeojson library
+        const geojsonData = osmtogeojson(data);
+
+        // Remove previous child polygons layer if it exists
+        if (childPolygonsLayer) {
+            map.removeLayer(childPolygonsLayer);
+        }
+
+        // Add the child polygons to the map
+        childPolygonsLayer = L.geoJSON(geojsonData, {
+            style: function (feature) {
+                return { color: "#4ade80", weight: 2, fillOpacity: 0.05, fillColor: '#4ade80' };
+            },
+            onEachFeature: function (feature, layer) {
+                if (feature.properties && feature.properties.name) {
+                    layer.bindTooltip(feature.properties.name, { permanent: false, direction: "auto" });
+                }
+                layer.on('mouseover', function () {
+                    if (layer && typeof layer.setStyle === 'function') {
+                        layer.setStyle({
+                            weight: 5,
+                            color: '#666',
+                            dashArray: '',
+                            fillOpacity: 0.7
+                        });
+                    }
+                    if (childPolygonsLayer) {
+                        childPolygonsLayer.bringToFront();
+                    }
+                });
+                layer.on('mouseout', function () {
+                    // Check if layer is a valid Leaflet Path object before calling setStyle
+                    if (layer && typeof layer.setStyle === 'function') {
+                        layer.setStyle({
+                            weight: 2,
+                            color: '#3388ff',
+                            dashArray: '',
+                            fillOpacity: 0.2
+                        });
+                    }
+                });
+                layer.on('click', function() {
+                    // Only allow drill-down if not at the lowest level (kecamatan)
+                    if (childAdminLevel < 8 && feature.properties && feature.properties.name) {
+                        // Trigger search for this child location
+                        searchLocation(feature.properties.name);
+                    }
+                });
+            }
+        }).addTo(map);
+    } catch (error) {
+        console.error('Error fetching admin boundaries:', error);
+    }
 }
 
 async function fetchTopicData(location) {
@@ -148,12 +265,30 @@ async function fetchTopicData(location) {
 
         const formatted = formatResponse(responses[index]);
 
-        tabContent.innerHTML = `
-          <div class="content-box">
-            <h3>${topic.key}</h3>
-            ${formatted}
-          </div>
-        `;
+        const contentBox = document.createElement('div');
+        contentBox.className = 'content-box';
+        contentBox.innerHTML = `<h3>${topic.key}</h3>${formatted}`;
+
+        if (topic.key === '🌍 Geografi' || topic.key === '💼 Ekonomi') {
+            const canvas = document.createElement('canvas');
+            contentBox.appendChild(canvas);
+            // Placeholder for chart data
+            const chartData = {
+                labels: ['2010', '2015', '2020'],
+                datasets: [{
+                    label: 'Population/GDP',
+                    data: [100, 120, 150],
+                    borderColor: '#4338ca',
+                    tension: 0.1
+                }]
+            };
+            new Chart(canvas, {
+                type: 'line',
+                data: chartData,
+            });
+        }
+
+        tabContent.appendChild(contentBox);
 
         generateTopicInsight(location, topic.key).then((insight) => {
             const insightBox = document.createElement("div");
