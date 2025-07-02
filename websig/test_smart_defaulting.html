@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Smart Defaulting</title>
+</head>
+<body>
+    <h1>Test Smart Defaulting Function</h1>
+    <input id="testInput" placeholder="Type a city name like 'bogor'" />
+    <button onclick="testDefault()">Test</button>
+    <div id="result"></div>
+
+    <script>
+        // Smart defaulting function for ambiguous location names
+        function applySmartDefaulting(input) {
+            const cleanInput = input.toLowerCase().trim();
+            
+            // Common ambiguous location mappings - default to "Kota" unless "Kabupaten" is specified
+            const smartDefaults = {
+                'bogor': 'Kota Bogor',
+                'bandung': 'Kota Bandung',
+                'bekasi': 'Kota Bekasi',
+                'depok': 'Kota Depok',
+                'tangerang': 'Kota Tangerang',
+                'cimahi': 'Kota Cimahi',
+                'tasikmalaya': 'Kota Tasikmalaya',
+                'sukabumi': 'Kota Sukabumi',
+                'cirebon': 'Kota Cirebon',
+                'malang': 'Kota Malang',
+                'kediri': 'Kota Kediri',
+                'blitar': 'Kota Blitar',
+                'madiun': 'Kota Madiun',
+                'mojokerto': 'Kota Mojokerto',
+                'pasuruan': 'Kota Pasuruan',
+                'probolinggo': 'Kota Probolinggo',
+                'batu': 'Kota Batu',
+                'yogyakarta': 'Kota Yogyakarta',
+                'solo': 'Kota Surakarta',
+                'surakarta': 'Kota Surakarta',
+                'semarang': 'Kota Semarang',
+                'salatiga': 'Kota Salatiga',
+                'pekalongan': 'Kota Pekalongan',
+                'tegal': 'Kota Tegal',
+                'magelang': 'Kota Magelang',
+                'surabaya': 'Kota Surabaya',
+                'medan': 'Kota Medan',
+                'palembang': 'Kota Palembang',
+                'makassar': 'Kota Makassar',
+                'denpasar': 'Kota Denpasar',
+                'pontianak': 'Kota Pontianak',
+                'banjarmasin': 'Kota Banjarmasin',
+                'samarinda': 'Kota Samarinda',
+                'balikpapan': 'Kota Balikpapan',
+                'palu': 'Kota Palu',
+                'manado': 'Kota Manado',
+                'ambon': 'Kota Ambon',
+                'jayapura': 'Kota Jayapura'
+            };
+            
+            // Check if input already has administrative prefix
+            const hasPrefix = /^(kota|kabupaten|provinsi|kecamatan|kelurahan|desa)\s/.test(cleanInput);
+            
+            if (!hasPrefix && smartDefaults[cleanInput]) {
+                console.log(`Smart defaulting: "${input}" → "${smartDefaults[cleanInput]}"`);
+                return smartDefaults[cleanInput];
+            }
+            
+            return input; // Return original if no smart default found
+        }
+
+        function testDefault() {
+            const input = document.getElementById('testInput').value;
+            const result = applySmartDefaulting(input);
+            document.getElementById('result').innerHTML = `
+                <p><strong>Input:</strong> ${input}</p>
+                <p><strong>Output:</strong> ${result}</p>
+            `;
+        }
+    </script>
+</body>
+</html>
