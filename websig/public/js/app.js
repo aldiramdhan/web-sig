@@ -14,193 +14,70 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
 
-let marker;
 let polygonLayer;
-let childPolygonsLayer;
-let currentAdminLevel = null;
-let currentLocation = null;
 
-async function searchLocation(clickedLocation) {
-    // Use either the clicked location name or the input value
-    const location = clickedLocation || document.getElementById("locationInput").value;
+async function searchLocation() {
+    const location = document.getElementById("locationInput").value;
     if (!location) return alert("Masukkan lokasi!");
-    
-    // Store current location for reference
-    currentLocation = location;
 
-    const geoRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${location}&format=json&polygon_geojson=1`
-    );
-    const geoData = await geoRes.json();
-    if (!geoData.length) return alert("Lokasi tidak ditemukan!");
+    try {
+        const geoRes = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${location}&format=json&polygon_geojson=1`,
+            {
+                headers: {
+                    'User-Agent': 'GeoExplorer/1.0 (https://example.com)' // Add a User-Agent header
+                }
+            }
+        );
 
-    const { lat, lon, display_name, geojson, osm_type, osm_id } = geoData[0];
-    map.setView([lat, lon], 10);
+        if (!geoRes.ok) {
+            throw new Error(`HTTP error! status: ${geoRes.status}`);
+        }
 
-    // Clear previous layers
-    if (marker) map.removeLayer(marker);
-    if (polygonLayer) {
-        map.removeLayer(polygonLayer);
-        polygonLayer = null;
-    }
-    if (childPolygonsLayer) {
-        map.removeLayer(childPolygonsLayer);
-        childPolygonsLayer = null;
-    }
+        const geoData = await geoRes.json();
+        if (!geoData.length) return alert("Lokasi tidak ditemukan!");
 
-    // Removed marker creation as per request
+        const { lat, lon, geojson } = geoData[0];
+        map.setView([lat, lon], 10);
 
-    // Add parent polygon if available
-    if (geojson) {
-        polygonLayer = L.geoJSON(geojson, {
-            style: {
-                color: "#1d4ed8",
-                weight: 3,
-                fillOpacity: 0.1,
-            },
-        }).addTo(map);
-        map.fitBounds(polygonLayer.getBounds());
-    }
-
-    fetchTopicData(location);
-
-    // Automatically show the sidebar and adjust map
-    const sidebar = document.getElementById('sidebar');
-    sidebar.classList.add("show");
-    document.getElementById('main-container').style.gridTemplateColumns = '400px 1fr';
-    setTimeout(() => {
-        map.invalidateSize();
+        // Remove previous polygon
         if (polygonLayer) {
+            map.removeLayer(polygonLayer);
+            polygonLayer = null;
+        }
+
+        // Add polygon if available
+        if (geojson) {
+            polygonLayer = L.geoJSON(geojson, {
+                style: {
+                    color: "#1d4ed8",
+                    weight: 2,
+                    fillOpacity: 0.1,
+                },
+            }).addTo(map);
             map.fitBounds(polygonLayer.getBounds());
         }
-    }, 300);
 
-    // Determine admin level based on OSM data
-    // This is a simplistic approach - in a real app, you might want to use the actual admin_level from OSM
-    let adminLevel;
-    if (osm_type === 'relation' && display_name.includes('country')) {
-        adminLevel = 2; // Country level
-    } else if (display_name.includes('province') || display_name.includes('prefecture') || display_name.includes('state')) {
-        adminLevel = 4; // Province/state level
-    } else if (display_name.includes('regency') || display_name.includes('district') || display_name.includes('county')) {
-        adminLevel = 6; // Regency/district level
-    } else if (display_name.includes('subdistrict') || display_name.includes('kecamatan')) {
-        adminLevel = 8; // Subdistrict/kecamatan level
-    } else {
-        // Default to country level if we can't determine
-        adminLevel = 2;
-    }
-    
-    currentAdminLevel = adminLevel;
-    
-    // Fetch child administrative boundaries
-    if (geojson && adminLevel < 8) { // Don't fetch children for subdistricts (kecamatan)
-        fetchAdminBoundaries(geojson, adminLevel);
-    }
-}
+        fetchTopicData(location);
 
-async function fetchAdminBoundaries(parentGeojson, parentAdminLevel) {
-    try {
-        // Calculate bounding box from parent geojson
-        let bounds = L.geoJSON(parentGeojson).getBounds();
-        let south = bounds.getSouth();
-        let west = bounds.getWest();
-        let north = bounds.getNorth();
-        let east = bounds.getEast();
+        // Automatically show the sidebar and adjust map layout
+        const sidebar = document.getElementById('sidebar');
+        const mainContainer = document.getElementById('main-container');
+        
+        sidebar.classList.add("show");
+        mainContainer.classList.add('sidebar-visible');
 
-        // Determine child admin level based on parent admin level
-        let childAdminLevel;
-        if (parentAdminLevel === 2) { // Country
-            childAdminLevel = 4; // States/Provinces
-        } else if (parentAdminLevel === 4) { // State/Province
-            childAdminLevel = 6; // Districts/Regencies
-        } else if (parentAdminLevel === 6) { // District/Regency
-            childAdminLevel = 8; // Subdistricts/Kecamatan
-        } else {
-            console.log('No child admin levels to fetch for this level');
-            return;
-        }
-
-        // Query for administrative boundaries within the bounding box
-        let query = `[out:json];
-        (relation["boundary"="administrative"]["admin_level"="${childAdminLevel}"](${south},${west},${north},${east});
-         node["place"~"city|town|village"](${south},${west},${north},${east});
-        );
-        out geom;`;
-
-        const overpassUrl = 'https://overpass-api.de/api/interpreter';
-        const response = await fetch(overpassUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'data=' + encodeURIComponent(query)
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Overpass API error: ${response.status} ${response.statusText} - ${errorText}`);
-        }
-
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            const errorText = await response.text();
-            throw new Error(`Expected JSON but received ${contentType}: ${errorText}`);
-        }
-
-        const data = await response.json();
-        console.log('Child admin boundaries:', data);
-
-        // Convert Overpass data to GeoJSON using osmtogeojson library
-        const geojsonData = osmtogeojson(data);
-
-        // Remove previous child polygons layer if it exists
-        if (childPolygonsLayer) {
-            map.removeLayer(childPolygonsLayer);
-        }
-
-        // Add the child polygons to the map
-        childPolygonsLayer = L.geoJSON(geojsonData, {
-            style: function (feature) {
-                return { color: "#4ade80", weight: 2, fillOpacity: 0.05, fillColor: '#4ade80' };
-            },
-            onEachFeature: function (feature, layer) {
-                if (feature.properties && feature.properties.name) {
-                    layer.bindTooltip(feature.properties.name, { permanent: false, direction: "auto" });
-                }
-                layer.on('mouseover', function () {
-                    if (layer && typeof layer.setStyle === 'function') {
-                        layer.setStyle({
-                            weight: 5,
-                            color: '#666',
-                            dashArray: '',
-                            fillOpacity: 0.7
-                        });
-                    }
-                    if (childPolygonsLayer) {
-                        childPolygonsLayer.bringToFront();
-                    }
-                });
-                layer.on('mouseout', function () {
-                    // Check if layer is a valid Leaflet Path object before calling setStyle
-                    if (layer && typeof layer.setStyle === 'function') {
-                        layer.setStyle({
-                            weight: 2,
-                            color: '#3388ff',
-                            dashArray: '',
-                            fillOpacity: 0.2
-                        });
-                    }
-                });
-                layer.on('click', function() {
-                    // Only allow drill-down if not at the lowest level (kecamatan)
-                    if (childAdminLevel < 8 && feature.properties && feature.properties.name) {
-                        // Trigger search for this child location
-                        searchLocation(feature.properties.name);
-                    }
-                });
+        // Invalidate map size to ensure it resizes correctly
+        setTimeout(() => {
+            map.invalidateSize();
+            if (polygonLayer) {
+                map.fitBounds(polygonLayer.getBounds());
             }
-        }).addTo(map);
+        }, 300); // Corresponds to the transition duration
+
     } catch (error) {
-        console.error('Error fetching admin boundaries:', error);
+        console.error("Fetch error:", error);
+        alert("Gagal mengambil data lokasi. Server mungkin sedang sibuk atau terjadi masalah jaringan. Silakan tunggu sejenak dan coba lagi.");
     }
 }
 
@@ -208,43 +85,43 @@ async function fetchTopicData(location) {
     const topics = [
         {
             key: "📜 Sejarah",
-            prompt: `Jelaskan sejarah dan perkembangan ${location}. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data sejarah untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "timeline" (array objek dengan "year" dan "event").`,
         },
         {
             key: "🌍 Geografi",
-            prompt: `Deskripsikan kondisi geografis ${location} termasuk bentang alam, iklim, dan distribusi manusia. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data geografis untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "statistics" (array objek dengan "label" dan "value").`,
         },
         {
             key: "🏛️ Politik & Pemerintahan",
-            prompt: `Gambarkan struktur pemerintahan, kebijakan penting, dan dinamika politik di ${location}. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data politik dan pemerintahan untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "details" (array objek dengan "label" dan "value").`,
         },
         {
             key: "🌱 Lingkungan",
-            prompt: `Jelaskan kondisi lingkungan di ${location} termasuk hutan, satwa liar, isu perubahan iklim, dan upaya pelestarian. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data lingkungan untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "key_issues" (array string).`,
         },
         {
             key: "🧪 Sains & Teknologi",
-            prompt: `Sorot perkembangan sains dan teknologi di ${location}, termasuk inovasi lokal dan institusi riset. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data sains dan teknologi untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "innovations" (array string).`,
         },
         {
             key: "🛡️ Keamanan",
-            prompt: `Diskusikan isu-isu keamanan dalam negeri di ${location}, seperti kejahatan, bencana, atau keamanan siber. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data keamanan untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "security_points" (array string).`,
         },
         {
             key: "🌾 Pertanian",
-            prompt: `Jelaskan profil pertanian di ${location}, mencakup komoditas utama, irigasi, dan tantangan. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data pertanian untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "main_commodities" (array string).`,
         },
         {
             key: "💼 Ekonomi",
-            prompt: `Deskripsikan struktur ekonomi di ${location}, termasuk sektor industri, perdagangan, dan infrastruktur. Tulis dalam bahasa Indonesia.`,
+            prompt: `Berikan data ekonomi untuk ${location} dalam format JSON. Pastikan semua respons dalam Bahasa Indonesia. JSON harus berisi "summary" (string) dan "statistics" (array objek dengan "label" dan "value" untuk PDB, populasi, dll).`,
         },
     ];
 
-    document.getElementById("tabs").innerHTML = "<p>🔄 Memuat insight...</p>";
+    document.getElementById("tabs").innerHTML = "<p>🔄 Memuat wawasan...</p>";
     document.getElementById("tabContents").innerHTML = "";
 
     const responses = await Promise.all(
-        topics.map((t) => queryGemini(t.prompt))
+        topics.map((t) => queryGemini(t.prompt, true))
     );
 
     const tabsContainer = document.getElementById("tabs");
@@ -263,56 +140,89 @@ async function fetchTopicData(location) {
         const tabContent = document.createElement("div");
         tabContent.className = "tab-content" + (index === 0 ? " active" : "");
 
-        const formatted = formatResponse(responses[index]);
-
         const contentBox = document.createElement('div');
         contentBox.className = 'content-box';
-        contentBox.innerHTML = `<h3>${topic.key}</h3>${formatted}`;
+        contentBox.innerHTML = `<h3>${topic.key}</h3>`;
 
-        if (topic.key === '🌍 Geografi' || topic.key === '💼 Ekonomi') {
-            const canvas = document.createElement('canvas');
-            contentBox.appendChild(canvas);
-            // Placeholder for chart data
-            const chartData = {
-                labels: ['2010', '2015', '2020'],
-                datasets: [{
-                    label: 'Population/GDP',
-                    data: [100, 120, 150],
-                    borderColor: '#4338ca',
-                    tension: 0.1
-                }]
-            };
-            new Chart(canvas, {
-                type: 'line',
-                data: chartData,
-            });
+        try {
+            // Clean the response to ensure it is valid JSON
+            const cleanedResponse = responses[index].replace(/```json|```/g, '').trim();
+            const data = JSON.parse(cleanedResponse);
+            contentBox.appendChild(renderStructuredResponse(data));
+        } catch (e) {
+            console.error("JSON parsing error:", e, responses[index]);
+            const errorMsg = document.createElement('p');
+            errorMsg.textContent = "Gagal memuat data terstruktur. Menampilkan teks mentah.";
+            contentBox.appendChild(errorMsg);
+            // Fallback to plain text formatting if JSON parsing fails
+            const formatted = formatResponse(responses[index]);
+            contentBox.innerHTML += formatted;
         }
 
         tabContent.appendChild(contentBox);
-
-        generateTopicInsight(location, topic.key).then((insight) => {
-            const insightBox = document.createElement("div");
-            insightBox.className = "content-box";
-            insightBox.innerHTML = `
-            <h3>📌 Wawasan Penting (${topic.key})</h3>
-            ${insight}
-          `;
-            tabContent.appendChild(insightBox);
-        });
-
         tabContentsContainer.appendChild(tabContent);
 
         tab.addEventListener("click", () => {
-            document
-                .querySelectorAll(".tab")
-                .forEach((t) => t.classList.remove("active"));
-            document
-                .querySelectorAll(".tab-content")
-                .forEach((c) => c.classList.remove("active"));
+            document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+            document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
             tab.classList.add("active");
             tabContent.classList.add("active");
         });
     });
+}
+
+function renderStructuredResponse(data) {
+    const container = document.createElement('div');
+
+    if (data.summary) {
+        const summary = document.createElement('p');
+        summary.className = 'summary';
+        summary.textContent = data.summary;
+        container.appendChild(summary);
+    }
+
+    if (data.statistics && data.statistics.length > 0) {
+        const statsGrid = document.createElement('div');
+        statsGrid.className = 'stats-grid';
+        data.statistics.forEach(stat => {
+            const statCard = document.createElement('div');
+            statCard.className = 'stat-card';
+            statCard.innerHTML = `<span class="stat-label">${stat.label}</span><span class="stat-value">${stat.value}</span>`;
+            statsGrid.appendChild(statCard);
+        });
+        container.appendChild(statsGrid);
+    }
+
+    if (data.timeline && data.timeline.length > 0) {
+        const timeline = document.createElement('ul');
+        timeline.className = 'timeline';
+        data.timeline.forEach(item => {
+            const timelineItem = document.createElement('li');
+            timelineItem.innerHTML = `<span class="year">${item.year}</span><p>${item.event}</p>`;
+            timeline.appendChild(timelineItem);
+        });
+        container.appendChild(timeline);
+    }
+
+    const listKeys = ['details', 'key_issues', 'innovations', 'security_points', 'main_commodities'];
+    listKeys.forEach(key => {
+        if (data[key] && data[key].length > 0) {
+            const list = document.createElement('ul');
+            list.className = 'info-list';
+            data[key].forEach(item => {
+                const listItem = document.createElement('li');
+                if (typeof item === 'object') {
+                    listItem.innerHTML = `<strong>${item.label}:</strong> ${item.value}`;
+                } else {
+                    listItem.textContent = item;
+                }
+                list.appendChild(listItem);
+            });
+            container.appendChild(list);
+        }
+    });
+
+    return container;
 }
 
 function formatResponse(text) {
@@ -335,8 +245,26 @@ async function generateTopicInsight(location, topic) {
     return formatResponse(response);
 }
 
-async function queryGemini(prompt) {
+async function queryGemini(prompt, isJson = false) {
     try {
+        const body = {
+            contents: [
+                {
+                    parts: [
+                        {
+                            text: prompt,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        if (isJson) {
+            body.generationConfig = {
+                response_mime_type: "application/json",
+            };
+        }
+
         const res = await fetch(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
                 API_KEY,
@@ -345,47 +273,40 @@ async function queryGemini(prompt) {
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            parts: [
-                                {
-                                    text: prompt,
-                                },
-                            ],
-                        },
-                    ],
-                }),
+                body: JSON.stringify(body),
             }
         );
         const data = await res.json();
         return (
             data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-            "⚠️ Tidak ada respons."
+            (isJson ? '{ "summary": "Tidak ada respons.", "statistics": [] }' : "⚠️ Tidak ada respons.")
         );
     } catch (error) {
         console.error("Kesalahan saat mengakses Gemini:", error);
-        return "⚠️ Terjadi kesalahan API.";
+        return (isJson ? '{ "summary": "Terjadi kesalahan API.", "statistics": [] }' : "⚠️ Terjadi kesalahan API.");
     }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
     const toggleBtn = document.getElementById("toggleSidebarBtn");
     const sidebar = document.getElementById("sidebar");
+    const mainContainer = document.getElementById('main-container');
 
-    // Sidebar awal disembunyikan
-    // sidebar.classList.remove("show");
-    // toggleBtn.innerText = "☰";
+    if (!toggleBtn || !sidebar) return;
 
     toggleBtn.addEventListener("click", () => {
-        const isVisible = sidebar.classList.contains("show");
+        const isVisible = sidebar.classList.toggle("show");
+        mainContainer.classList.toggle('sidebar-visible', isVisible);
 
         if (isVisible) {
-            sidebar.classList.remove("show");
-            toggleBtn.innerText = "AI Insights✨";
+            toggleBtn.innerHTML = "×";
         } else {
-            sidebar.classList.add("show");
-            toggleBtn.innerText = "×";
+            toggleBtn.innerHTML = "AI Insights ✨";
         }
+
+        // Adjust map size after transition
+        setTimeout(() => {
+            map.invalidateSize();
+        }, 300);
     });
 });
